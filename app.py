@@ -1,83 +1,94 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import io
-import re
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="AI Data Analyst Assistant", layout="wide")
-st.title("🧠 AI Data Analyst Assistant")
-st.write("Upload any dataset (CSV, Excel, JSON, TXT) and start exploring it with AI!")
+st.title("🧠 AI Data Analyst Assistant (Dynamic)")
 
-# File uploader (supports multiple formats)
-uploaded_file = st.file_uploader("📂 Upload your dataset", type=["csv", "xlsx", "xls", "json", "txt"])
-
-def clean_column_names(columns):
-    """Standardize column names: lowercase, no spaces, no special chars"""
-    cleaned = []
-    for col in columns:
-        col = col.strip().lower()                  # lowercase
-        col = re.sub(r'[^a-zA-Z0-9_]', '_', col)   # replace special chars with _
-        col = re.sub(r'__+', '_', col)             # replace multiple _ with single
-        cleaned.append(col)
-    return cleaned
-
-def load_file(file):
-    """Detect file type and load into DataFrame with encoding fallback"""
-    name = file.name.lower()
-
-    try:
-        if name.endswith(".csv") or name.endswith(".txt"):
-            encodings = ["utf-8", "latin1", "cp1252"]  # fallback encodings
-            for enc in encodings:
-                try:
-                    file.seek(0)  # reset file pointer
-                    return pd.read_csv(file, encoding=enc, on_bad_lines="skip")
-                except Exception:
-                    continue
-            raise ValueError("Could not decode file with UTF-8, Latin1, or CP1252")
-
-        elif name.endswith((".xls", ".xlsx")):
-            return pd.read_excel(file)
-
-        elif name.endswith(".json"):
-            return pd.read_json(file)
-
-        else:
-            st.error("❌ Unsupported file format. Please upload CSV, Excel, JSON, or TXT.")
-            return None
-
-    except Exception as e:
-        st.error(f"⚠️ Could not read file: {e}")
-        return None
-
-
+# Upload CSV
+uploaded_file = st.file_uploader("📂 Upload your CSV file", type="csv")
 
 if uploaded_file:
-    df = load_file(uploaded_file)
+    try:
+        # Load CSV safely
+        try:
+            df = pd.read_csv(uploaded_file, encoding="utf-8")
+        except UnicodeDecodeError:
+            df = pd.read_csv(uploaded_file, encoding="latin1")
+        
+        # Normalize column names
+        df.columns = df.columns.str.strip().str.replace(" ", "_").str.lower()
+        
+        st.write("### Columns in your CSV")
+        st.write(df.columns.tolist())
 
-    if df is not None:
-        # Clean column names
-        df.columns = clean_column_names(df.columns)
-
-        st.subheader("🔍 Dataset Preview (Cleaned)")
+        st.write("### Preview")
         st.dataframe(df.head())
 
-        st.write("**Shape of dataset:**", df.shape)
-        st.write("**Cleaned Columns:**", list(df.columns))
+        # Connect to SQLite in-memory
+        conn = sqlite3.connect(":memory:")
+        table_name = "dataset"
+        df.to_sql(table_name, conn, if_exists="replace", index=False)
+        st.success(f"✅ Table '{table_name}' loaded!")
 
-        # Save into SQLite
-        conn = sqlite3.connect("data.db")
-        df.to_sql("dataset", conn, if_exists="replace", index=False)
+        # Identify numeric and text columns
+        numeric_cols = df.select_dtypes(include=['int64','float64']).columns.tolist()
+        text_cols = df.select_dtypes(include=['object']).columns.tolist()
 
-        # 🔑 Show SQL schema
-        schema_query = "PRAGMA table_info(dataset);"
-        schema_info = pd.read_sql(schema_query, conn)
+        # User question
+        question = st.text_input("❓ Ask a question about your data")
 
-        st.subheader("📑 Dataset Schema (SQLite format)")
-        st.dataframe(schema_info)
+        if st.button("Run Query") and question.strip():
+            question_lower = question.lower()
 
-        st.code("\n".join(
-            [f"{row['name']} ({row['type']})" for _, row in schema_info.iterrows()]
-        ), language="sql")
+            # Dynamic SQL generation based on detected columns
+            if "top" in question_lower or "highest" in question_lower:
+                if numeric_cols:
+                    sql = f"SELECT * FROM {table_name} ORDER BY {numeric_cols[0]} DESC LIMIT 5;"
+                else:
+                    st.error("No numeric column found to sort by.")
+                    st.stop()
 
-        st.success("✅ Data loaded successfully into SQLite with schema generated!")
+            elif "average" in question_lower:
+                if numeric_cols:
+                    sql = f"SELECT AVG({numeric_cols[0]}) AS avg_{numeric_cols[0]} FROM {table_name};"
+                else:
+                    st.error("No numeric column found for average.")
+                    st.stop()
+
+            elif "total" in question_lower or "sum" in question_lower:
+                if numeric_cols:
+                    sql = f"SELECT SUM({numeric_cols[0]}) AS total_{numeric_cols[0]} FROM {table_name};"
+                else:
+                    st.error("No numeric column found for sum.")
+                    st.stop()
+
+            elif "count" in question_lower or "how many" in question_lower:
+                sql = f"SELECT COUNT(*) AS total_rows FROM {table_name};"
+
+            else:
+                st.warning("Could not automatically generate SQL for this question.")
+                st.stop()
+
+            st.write("Generated SQL:", sql)
+
+            # Execute SQL
+            try:
+                result = pd.read_sql(sql, conn)
+                st.write("### Result")
+                st.dataframe(result)
+
+                # Chart if numeric
+                result_numeric_cols = result.select_dtypes(include=['int64','float64']).columns.tolist()
+                if result_numeric_cols:
+                    st.write("### 📊 Chart")
+                    fig, ax = plt.subplots()
+                    result.plot(kind="bar", x=result.columns[0], y=result_numeric_cols, ax=ax)
+                    plt.xticks(rotation=45)
+                    st.pyplot(fig)
+
+            except Exception as e:
+                st.error(f"Error executing SQL: {e}")
+
+    except Exception as e:
+        st.error(f"Error loading CSV: {e}")
