@@ -8,7 +8,7 @@ import hashlib
 # ---------------------------
 # Initialize Google AI Client
 # ---------------------------
-client = genai.Client(api_key="AIzaSyD2zTSTy_jdaW489MqHg-rGJF4nDPoQQQY")  # <-- Replace with your Google AI API key
+client = genai.Client(api_key="")  # <-- Replace with your Google AI API key
 
 # ---------------------------
 # Database Setup
